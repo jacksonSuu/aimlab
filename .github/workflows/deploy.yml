@@ -1,0 +1,75 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - main  # 或 master，根据你的主分支名称修改
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          REMOTE_DIR: /srv/app/aimlab
+        run: |
+          # 创建远程目录
+          ssh $SERVER_USER@$SERVER_HOST "mkdir -p $REMOTE_DIR/out"
+          
+          # 上传构建文件
+          rsync -avz --delete \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            --exclude '.github' \
+            out/ $SERVER_USER@$SERVER_HOST:$REMOTE_DIR/out/
+
+      - name: Upload and configure Nginx
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          # 上传 nginx 配置
+          scp nginx.conf $SERVER_USER@$SERVER_HOST:/tmp/aimlab.nginx.conf
+          
+          # 配置 nginx（只在首次部署时执行，后续会跳过）
+          ssh $SERVER_USER@$SERVER_HOST << 'ENDSSH'
+            if [ ! -f /etc/nginx/sites-enabled/aimlab.yuan1.cn ]; then
+              sudo mv /tmp/aimlab.nginx.conf /etc/nginx/sites-available/aimlab.yuan1.cn
+              sudo ln -sf /etc/nginx/sites-available/aimlab.yuan1.cn /etc/nginx/sites-enabled/
+            fi
+            sudo nginx -t && sudo systemctl reload nginx
+          ENDSSH
+
+      - name: Deployment completed
+        run: |
+          echo "✅ Deployment successful!"
+          echo "🌐 Visit: https://aimlab.yuan1.cn"
